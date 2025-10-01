@@ -21,8 +21,8 @@ import {
 } from './config/preferences'
 import { initializeCustomIndicators } from './config/indicatorExtensions'
 import type { ChartTileConfig, Preferences, SettingsDraft, SymbolRegistry, TabConfig } from './types'
+import { getUserPreferences, saveUserPreferences } from './services/mockDatabase'
 
-const STORAGE_PREFIX = 'internal-tv-preferences'
 const DEFAULT_USER_ID = 'default-user'
 
 const SYMBOL_REGISTRY: SymbolRegistry = AVAILABLE_SYMBOLS.reduce((registry, symbol) => {
@@ -47,10 +47,6 @@ type GridLayout = {
   columns: number
   templateRows: string
   placements: GridPlacement[]
-}
-
-function storageKey(userId: string): string {
-  return `${STORAGE_PREFIX}:${userId}`
 }
 
 function sanitizeIndicatorList(values: string[] | undefined, allowed: string[], fallback: string[]): string[] {
@@ -101,30 +97,6 @@ function sanitizePreferences(preferences: Preferences | undefined): Preferences 
     tabs: sanitizedTabs,
     activeTabId,
   }
-}
-
-function loadPreferences(userId: string): Preferences {
-  if (typeof window === 'undefined') {
-    return buildDefaultPreferences(AVAILABLE_SYMBOLS)
-  }
-  try {
-    const raw = window.localStorage.getItem(storageKey(userId))
-    if (!raw) {
-      return buildDefaultPreferences(AVAILABLE_SYMBOLS)
-    }
-    const parsed = JSON.parse(raw) as Preferences
-    return sanitizePreferences(parsed)
-  } catch (error) {
-    console.warn('Failed to parse stored preferences, falling back to defaults.', error)
-    return buildDefaultPreferences(AVAILABLE_SYMBOLS)
-  }
-}
-
-function persistPreferences(userId: string, preferences: Preferences) {
-  if (typeof window === 'undefined') {
-    return
-  }
-  window.localStorage.setItem(storageKey(userId), JSON.stringify(preferences))
 }
 
 function getGridLayout(tileCount: number): GridLayout {
@@ -225,17 +197,56 @@ function getGridLayout(tileCount: number): GridLayout {
   }
 }
 
+const defaultPreferences = sanitizePreferences(undefined)
+
 function App() {
   const [state, setState] = useState<{ userId: string; preferences: Preferences }>(() => ({
     userId: DEFAULT_USER_ID,
-    preferences: loadPreferences(DEFAULT_USER_ID),
+    preferences: defaultPreferences,
   }))
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const datafeed = useMemo(() => new LocalDatafeed(AVAILABLE_SERIES, AVAILABLE_SYMBOLS), [])
 
   useEffect(() => {
     initializeCustomIndicators()
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const hydrate = async () => {
+      try {
+        setLoadError(null)
+        const stored = await getUserPreferences(DEFAULT_USER_ID)
+        if (!cancelled) {
+          const sanitized = sanitizePreferences(stored ?? undefined)
+          setState({ userId: DEFAULT_USER_ID, preferences: sanitized })
+        }
+      } catch (error) {
+        console.error('Failed to load preferences from mock database.', error)
+        if (!cancelled) {
+          setLoadError('Unable to load saved workspace. Showing defaults.')
+          setState({ userId: DEFAULT_USER_ID, preferences: sanitizePreferences(undefined) })
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      }
+    }
+
+    void hydrate()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const persistPreferencesAsync = useCallback((userId: string, preferences: Preferences) => {
+    void saveUserPreferences(userId, preferences).catch((error) => {
+      console.error('Failed to save preferences to mock database.', error)
+    })
   }, [])
 
   const activeTab = state.preferences.tabs.find((tab) => tab.id === state.preferences.activeTabId)
@@ -246,27 +257,28 @@ function App() {
 
   const handleSelectTab = (tabId: string) => {
     setState((prev) => {
+      if (prev.preferences.activeTabId === tabId) {
+        return prev
+      }
       const nextPreferences: Preferences = {
         ...prev.preferences,
         activeTabId: tabId,
       }
-      persistPreferences(prev.userId, nextPreferences)
-      return { ...prev, preferences: nextPreferences }
+      persistPreferencesAsync(prev.userId, nextPreferences)
+      return {
+        ...prev,
+        preferences: nextPreferences,
+      }
     })
   }
 
   const handleApplySettings = useCallback(
     (draft: SettingsDraft) => {
-      setState(() => {
-        const sanitized = sanitizePreferences(draft.preferences)
-        persistPreferences(draft.userId, sanitized)
-        return {
-          userId: draft.userId,
-          preferences: sanitized,
-        }
-      })
+      const sanitized = sanitizePreferences(draft.preferences)
+      persistPreferencesAsync(draft.userId, sanitized)
+      setState({ userId: draft.userId, preferences: sanitized })
     },
-    [],
+    [persistPreferencesAsync],
   )
 
   return (
@@ -283,6 +295,14 @@ function App() {
           </button>
         </div>
       </header>
+
+      {loadError && <div className="app__banner">{loadError}</div>}
+      {loading && (
+        <div className="app__loading" role="status" aria-live="polite">
+          <span className="app__loading-spinner" />
+          <span>Loading workspace…</span>
+        </div>
+      )}
 
       <nav className="app__tabs">
         {state.preferences.tabs.map((tab) => (
@@ -362,3 +382,4 @@ function App() {
 }
 
 export default App
+

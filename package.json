@@ -8,13 +8,10 @@
                     "build":  "tsc -b \u0026\u0026 vite build",
                     "lint":  "eslint .",
                     "preview":  "vite preview",
-                    "server":  "node server/index.mjs"
+                    "server":  "python server/app.py"
                 },
     "dependencies":  {
                          "@klinecharts/pro":  "^0.1.1",
-                         "better-sqlite3":  "^12.4.1",
-                         "cors":  "^2.8.5",
-                         "express":  "^5.1.0",
                          "klinecharts":  "^9.8.12",
                          "react":  "^19.1.1",
                          "react-dom":  "^19.1.1"

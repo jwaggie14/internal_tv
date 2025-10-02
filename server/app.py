@@ -79,7 +79,15 @@ def put_settings(user_id: str) -> Any:
         request.headers.get('X-Request-Time', '') or _iso_timestamp(),
     )
 
-    UPSERT_SQL = (\n            'INSERT INTO user_preferences (user_id, payload, updated_at) VALUES (?, ?, ?)'\n            ' ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at'\n        )\n\n    with get_db_connection() as conn:\n        conn.execute(UPSERT_SQL, record)\n        conn.commit()\n
+    upsert_sql = (
+        "INSERT INTO user_preferences (user_id, payload, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at"
+    )
+
+    with get_db_connection() as conn:
+        conn.execute(upsert_sql, record)
+        conn.commit()
+
     return ('', 204)
 
 

@@ -1,7 +1,7 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { SymbolInfo } from '@klinecharts/pro'
 
-import { buildTab, buildTile, cloneTabs, MAX_TILES_PER_TAB } from '../config/preferences'
+import { buildTab, buildTile, cloneTabs, MAX_TILES_PER_TAB, buildDefaultPreferences } from '../config/preferences'
 import type { Preferences, SettingsDraft, TabConfig } from '../types'
 
 interface IndicatorCatalog {
@@ -13,6 +13,7 @@ interface SettingsModalProps {
   open: boolean
   onClose: () => void
   onApply: (draft: SettingsDraft) => void
+  onLoadPreferences: (userId: string) => Promise<Preferences | null>
   currentUserId: string
   preferences: Preferences
   symbols: SymbolInfo[]
@@ -23,6 +24,7 @@ export function SettingsModal({
   open,
   onClose,
   onApply,
+  onLoadPreferences,
   currentUserId,
   preferences,
   symbols,
@@ -32,23 +34,33 @@ export function SettingsModal({
   const [draftTabs, setDraftTabs] = useState<TabConfig[]>([])
   const [draftActiveTabId, setDraftActiveTabId] = useState<string>('')
   const [editingTabId, setEditingTabId] = useState<string>('')
+  const [loadingExisting, setLoadingExisting] = useState(false)
+  const [loadMessage, setLoadMessage] = useState<string | null>(null)
+
+  const applyDraftPreferences = useCallback(
+    (prefs: Preferences) => {
+      const baseTabs = prefs.tabs.length ? prefs.tabs : buildDefaultPreferences(symbols).tabs
+      const clonedTabs = cloneTabs(baseTabs)
+      const nextActiveTabId =
+        prefs.activeTabId && clonedTabs.some((tab) => tab.id === prefs.activeTabId)
+          ? prefs.activeTabId
+          : clonedTabs[0]?.id ?? ''
+
+      setDraftTabs(clonedTabs)
+      setDraftActiveTabId(nextActiveTabId)
+      setEditingTabId(nextActiveTabId)
+    },
+    [symbols],
+  )
 
   useEffect(() => {
     if (!open) {
       return
     }
-    const baseTabs = preferences.tabs.length ? preferences.tabs : [buildTab(symbols)]
-    const clonedTabs = cloneTabs(baseTabs)
-    const nextActiveTabId =
-      preferences.activeTabId && clonedTabs.some((tab) => tab.id === preferences.activeTabId)
-        ? preferences.activeTabId
-        : clonedTabs[0]?.id ?? ''
-
+    applyDraftPreferences(preferences)
     setDraftUserId(currentUserId)
-    setDraftTabs(clonedTabs)
-    setDraftActiveTabId(nextActiveTabId)
-    setEditingTabId(nextActiveTabId)
-  }, [open, currentUserId, preferences, symbols])
+    setLoadMessage(null)
+  }, [open, currentUserId, preferences, applyDraftPreferences])
 
   useEffect(() => {
     if (!open) {
@@ -59,6 +71,28 @@ export function SettingsModal({
     }
   }, [open, draftTabs, editingTabId])
 
+  const handleLoadExisting = async () => {
+    const userId = draftUserId.trim() || currentUserId
+    setLoadingExisting(true)
+    setLoadMessage(null)
+    try {
+      const loaded = await onLoadPreferences(userId)
+      if (loaded) {
+        applyDraftPreferences(loaded)
+        setLoadMessage(`Loaded saved layout for "${userId}".`)
+      } else {
+        const defaults = buildDefaultPreferences(symbols)
+        applyDraftPreferences(defaults)
+        setLoadMessage(`No saved layout for "${userId}". Started from defaults.`)
+      }
+      setDraftUserId(userId)
+    } catch (error) {
+      console.error('Failed to load preferences for user', userId, error)
+      setLoadMessage('Failed to load saved preferences.')
+    } finally {
+      setLoadingExisting(false)
+    }
+  }
   const editingTab = useMemo(
     () => draftTabs.find((tab) => tab.id === editingTabId) ?? draftTabs[0],
     [draftTabs, editingTabId],
@@ -245,7 +279,17 @@ export function SettingsModal({
               onChange={(event) => setDraftUserId(event.target.value)}
               placeholder="e.g. analyst-01"
             />
-            <p className="modal__hint">Settings are stored locally per user ID.</p>
+            <div className="modal__row">
+              <button
+                className="modal__ghost"
+                onClick={handleLoadExisting}
+                disabled={loadingExisting}
+              >
+                {loadingExisting ? 'Loading…' : 'Load Saved Layout'}
+              </button>
+            </div>
+            {loadMessage && <p className="modal__hint">{loadMessage}</p>}
+            <p className="modal__hint">Settings are stored per user ID.</p>
           </section>
 
           <section className="modal__section">
@@ -393,3 +437,4 @@ export function SettingsModal({
     </div>
   )
 }
+

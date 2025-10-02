@@ -1,15 +1,12 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { SymbolInfo } from '@klinecharts/pro'
+import type { KLineData } from 'klinecharts'
 import '@klinecharts/pro/dist/klinecharts-pro.css'
 import './App.css'
 
 import { ChartTile } from './components/ChartTile'
 import { SettingsModal } from './components/SettingsModal'
-import {
-  AVAILABLE_SYMBOLS,
-  AVAILABLE_SERIES,
-  DEFAULT_PERIOD,
-  LocalDatafeed,
-} from './data/localDatafeed'
+import { LocalDatafeed, DEFAULT_PERIOD } from './data/localDatafeed'
 import {
   INDICATOR_CATALOG,
   DEFAULT_MAIN_INDICATORS,
@@ -21,14 +18,10 @@ import {
 } from './config/preferences'
 import { initializeCustomIndicators } from './config/indicatorExtensions'
 import type { ChartTileConfig, Preferences, SettingsDraft, SymbolRegistry, TabConfig } from './types'
-import { getUserPreferences, saveUserPreferences } from './services/mockDatabase'
+import { loadCsvPriceData } from './services/csvPriceRepository'
+import { getUserPreferences, saveUserPreferences } from './services/userSettingsStore'
 
 const DEFAULT_USER_ID = 'default-user'
-
-const SYMBOL_REGISTRY: SymbolRegistry = AVAILABLE_SYMBOLS.reduce((registry, symbol) => {
-  registry[symbol.ticker] = symbol
-  return registry
-}, {} as SymbolRegistry)
 
 const DEFAULT_ROW_HEIGHT = 'minmax(420px, 1fr)'
 const LARGE_SINGLE_HEIGHT = 'minmax(560px, 1.6fr)'
@@ -49,6 +42,11 @@ type GridLayout = {
   placements: GridPlacement[]
 }
 
+type PriceDataState = {
+  symbols: SymbolInfo[]
+  series: Record<string, KLineData[]>
+}
+
 function sanitizeIndicatorList(values: string[] | undefined, allowed: string[], fallback: string[]): string[] {
   if (!values?.length) {
     return [...fallback]
@@ -64,9 +62,14 @@ function sanitizeIndicatorList(values: string[] | undefined, allowed: string[], 
   return deduped.length ? deduped : [...fallback]
 }
 
-function sanitizePreferences(preferences: Preferences | undefined): Preferences {
-  const fallbackTicker = AVAILABLE_SYMBOLS[0]?.ticker ?? 'ACME'
-  const allowedTickers = new Set(AVAILABLE_SYMBOLS.map((symbol) => symbol.ticker))
+function sanitizePreferences(
+  preferences: Preferences | undefined,
+  symbols: SymbolInfo[],
+): Preferences {
+  const fallbackTicker = symbols[0]?.ticker ?? 'ACME'
+  const allowedTickers = new Set(symbols.map((symbol) => symbol.ticker))
+  const fallbackTile = () => buildTile(fallbackTicker)
+
   const sanitizeTile = (tile: ChartTileConfig): ChartTileConfig => ({
     ...tile,
     symbolTicker: allowedTickers.has(tile.symbolTicker) ? tile.symbolTicker : fallbackTicker,
@@ -76,12 +79,11 @@ function sanitizePreferences(preferences: Preferences | undefined): Preferences 
     },
   })
 
-  const tabs = preferences?.tabs?.length ? preferences.tabs : buildDefaultPreferences(AVAILABLE_SYMBOLS).tabs
-
-  const sanitizedTabs: TabConfig[] = cloneTabs(tabs).map((tab) => {
-    const baseTiles = tab.tiles.length ? tab.tiles : [buildTile(fallbackTicker)]
+  const baseTabs = preferences?.tabs?.length ? preferences.tabs : buildDefaultPreferences(symbols).tabs
+  const sanitizedTabs: TabConfig[] = cloneTabs(baseTabs).map((tab) => {
+    const baseTiles = tab.tiles.length ? tab.tiles : [fallbackTile()]
     const normalizedTiles = baseTiles.map(sanitizeTile).slice(0, MAX_TILES_PER_TAB)
-    const ensuredTiles = normalizedTiles.length ? normalizedTiles : [sanitizeTile(buildTile(fallbackTicker))]
+    const ensuredTiles = normalizedTiles.length ? normalizedTiles : [sanitizeTile(fallbackTile())]
     return {
       ...tab,
       tiles: ensuredTiles,
@@ -197,89 +199,139 @@ function getGridLayout(tileCount: number): GridLayout {
   }
 }
 
-const defaultPreferences = sanitizePreferences(undefined)
-
 function App() {
-  const [state, setState] = useState<{ userId: string; preferences: Preferences }>(() => ({
-    userId: DEFAULT_USER_ID,
-    preferences: defaultPreferences,
-  }))
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [priceData, setPriceData] = useState<PriceDataState | null>(null)
+  const [priceLoading, setPriceLoading] = useState(true)
+  const [priceError, setPriceError] = useState<string | null>(null)
 
-  const datafeed = useMemo(() => new LocalDatafeed(AVAILABLE_SERIES, AVAILABLE_SYMBOLS), [])
-
-  useEffect(() => {
-    initializeCustomIndicators()
-  }, [])
+  const [state, setState] = useState<{ userId: string; preferences: Preferences } | null>(null)
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    const hydrate = async () => {
+    const hydratePrices = async () => {
+      setPriceLoading(true)
+      setPriceError(null)
       try {
-        setLoadError(null)
-        const stored = await getUserPreferences(DEFAULT_USER_ID)
+        const data = await loadCsvPriceData()
         if (!cancelled) {
-          const sanitized = sanitizePreferences(stored ?? undefined)
-          setState({ userId: DEFAULT_USER_ID, preferences: sanitized })
+          setPriceData(data)
         }
       } catch (error) {
-        console.error('Failed to load preferences from mock database.', error)
+        console.error('Failed to load CSV price data.', error)
         if (!cancelled) {
-          setLoadError('Unable to load saved workspace. Showing defaults.')
-          setState({ userId: DEFAULT_USER_ID, preferences: sanitizePreferences(undefined) })
+          setPriceError('Unable to load market data from data.csv.')
         }
       } finally {
         if (!cancelled) {
-          setLoading(false)
+          setPriceLoading(false)
         }
       }
     }
 
-    void hydrate()
+    void hydratePrices()
     return () => {
       cancelled = true
     }
   }, [])
 
+  useEffect(() => {
+    if (!priceData) {
+      return
+    }
+    let cancelled = false
+    const hydrateSettings = async () => {
+      setSettingsLoading(true)
+      setSettingsError(null)
+      try {
+        const stored = await getUserPreferences(DEFAULT_USER_ID)
+        if (!cancelled) {
+          const sanitized = sanitizePreferences(stored ?? undefined, priceData.symbols)
+          setState({ userId: DEFAULT_USER_ID, preferences: sanitized })
+        }
+      } catch (error) {
+        console.error('Failed to load saved workspace.', error)
+        if (!cancelled) {
+          setSettingsError('Unable to load saved workspace. Defaults are being used.')
+          const fallback = sanitizePreferences(undefined, priceData.symbols)
+          setState({ userId: DEFAULT_USER_ID, preferences: fallback })
+        }
+      } finally {
+        if (!cancelled) {
+          setSettingsLoading(false)
+        }
+      }
+    }
+
+    void hydrateSettings()
+    return () => {
+      cancelled = true
+    }
+  }, [priceData])
+
+  useEffect(() => {
+    initializeCustomIndicators()
+  }, [])
+
   const persistPreferencesAsync = useCallback((userId: string, preferences: Preferences) => {
     void saveUserPreferences(userId, preferences).catch((error) => {
-      console.error('Failed to save preferences to mock database.', error)
+      console.error('Failed to save user preferences.', error)
     })
   }, [])
 
-  const activeTab = state.preferences.tabs.find((tab) => tab.id === state.preferences.activeTabId)
-    ?? state.preferences.tabs[0]
+  const ready = Boolean(priceData && state)
+  const symbolRegistry: SymbolRegistry = useMemo(() => {
+    if (!priceData) {
+      return {}
+    }
+    return priceData.symbols.reduce<SymbolRegistry>((registry, symbol) => {
+      registry[symbol.ticker] = symbol
+      return registry
+    }, {})
+  }, [priceData])
+
+  const activeTab = ready
+    ? state!.preferences.tabs.find((tab) => tab.id === state!.preferences.activeTabId)
+      ?? state!.preferences.tabs[0]
+    : null
 
   const activeTiles = activeTab?.tiles ?? []
   const gridLayout = useMemo(() => getGridLayout(activeTiles.length), [activeTiles.length])
 
+  const datafeed = useMemo(() => {
+    if (!priceData) {
+      return null
+    }
+    return new LocalDatafeed(priceData.series, priceData.symbols)
+  }, [priceData])
+
   const handleSelectTab = (tabId: string) => {
-    setState((prev) => {
-      if (prev.preferences.activeTabId === tabId) {
-        return prev
-      }
-      const nextPreferences: Preferences = {
-        ...prev.preferences,
-        activeTabId: tabId,
-      }
-      persistPreferencesAsync(prev.userId, nextPreferences)
-      return {
-        ...prev,
-        preferences: nextPreferences,
-      }
-    })
+    if (!state || state.preferences.activeTabId === tabId) {
+      return
+    }
+    const nextPreferences: Preferences = {
+      ...state.preferences,
+      activeTabId: tabId,
+    }
+    persistPreferencesAsync(state.userId, nextPreferences)
+    setState({ userId: state.userId, preferences: nextPreferences })
   }
 
   const handleApplySettings = useCallback(
     (draft: SettingsDraft) => {
-      const sanitized = sanitizePreferences(draft.preferences)
+      if (!priceData) {
+        return
+      }
+      const sanitized = sanitizePreferences(draft.preferences, priceData.symbols)
       persistPreferencesAsync(draft.userId, sanitized)
       setState({ userId: draft.userId, preferences: sanitized })
     },
-    [persistPreferencesAsync],
+    [persistPreferencesAsync, priceData],
   )
+
+  const showLoading = priceLoading || settingsLoading || !ready
 
   return (
     <div className="app">
@@ -289,15 +341,16 @@ function App() {
           <span className="app__subtitle">Chart Studio</span>
         </div>
         <div className="app__actions">
-          <div className="app__user-id">User: {state.userId}</div>
+          <div className="app__user-id">User: {state?.userId ?? DEFAULT_USER_ID}</div>
           <button className="app__button" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
         </div>
       </header>
 
-      {loadError && <div className="app__banner">{loadError}</div>}
-      {loading && (
+      {priceError && <div className="app__banner">{priceError}</div>}
+      {settingsError && <div className="app__banner">{settingsError}</div>}
+      {showLoading && (
         <div className="app__loading" role="status" aria-live="polite">
           <span className="app__loading-spinner" />
           <span>Loading workspace…</span>
@@ -305,22 +358,27 @@ function App() {
       )}
 
       <nav className="app__tabs">
-        {state.preferences.tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`app__tab ${tab.id === state.preferences.activeTabId ? 'app__tab--active' : ''}`}
-            onClick={() => handleSelectTab(tab.id)}
-          >
-            {tab.name || 'Untitled'}
-          </button>
-        ))}
-        {!state.preferences.tabs.length && (
-          <span className="app__tabs-empty">Create a tab from settings to get started.</span>
-        )}
+        {ready
+          ? state!.preferences.tabs.map((tab) => (
+              <button
+                key={tab.id}
+                className={`app__tab ${tab.id === state!.preferences.activeTabId ? 'app__tab--active' : ''}`}
+                onClick={() => handleSelectTab(tab.id)}
+              >
+                {tab.name || 'Untitled'}
+              </button>
+            ))
+          : (
+            <span className="app__tabs-empty">Workspace is loading…</span>
+          )}
       </nav>
 
       <main className="app__workspace">
-        {!activeTab ? (
+        {!ready || !datafeed ? (
+          <div className="app__empty">
+            <p>Preparing charts. Hang tight.</p>
+          </div>
+        ) : !activeTab ? (
           <div className="app__empty">
             <p>No tabs configured yet.</p>
             <button className="app__button" onClick={() => setSettingsOpen(true)}>
@@ -343,7 +401,8 @@ function App() {
             }}
           >
             {activeTiles.map((tile, index) => {
-              const symbol = SYMBOL_REGISTRY[tile.symbolTicker] ?? AVAILABLE_SYMBOLS[0]
+              const fallbackSymbol = priceData!.symbols[0] ?? { ticker: 'ACME', shortName: 'ACME', name: 'ACME', type: 'custom' } as SymbolInfo;
+              const symbol = symbolRegistry[tile.symbolTicker] ?? fallbackSymbol
               const placement = gridLayout.placements[index]
               const columnStart = placement?.columnStart ?? ((index % gridLayout.columns) + 1)
               const columnSpan = placement?.columnSpan ?? 1
@@ -372,9 +431,16 @@ function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onApply={handleApplySettings}
-        currentUserId={state.userId}
-        preferences={state.preferences}
-        symbols={AVAILABLE_SYMBOLS}
+        onLoadPreferences={async (userId) => {
+          if (!priceData) {
+            return null;
+          }
+          const stored = await getUserPreferences(userId);
+          return stored ? sanitizePreferences(stored, priceData.symbols) : null;
+        }}
+        currentUserId={state?.userId ?? DEFAULT_USER_ID}
+        preferences={ready ? state!.preferences : sanitizePreferences(undefined, priceData?.symbols ?? [])}
+        symbols={priceData?.symbols ?? []}
         indicatorCatalog={INDICATOR_CATALOG}
       />
     </div>
@@ -382,4 +448,12 @@ function App() {
 }
 
 export default App
+
+
+
+
+
+
+
+
 

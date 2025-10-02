@@ -7,8 +7,6 @@ import type {
   SymbolInfo,
 } from '@klinecharts/pro'
 
-import { MOCK_SERIES, MOCK_SYMBOLS } from './mockData'
-
 const DAILY_PERIOD: Period = {
   multiplier: 1,
   timespan: 'day',
@@ -16,8 +14,6 @@ const DAILY_PERIOD: Period = {
 }
 
 const SUPPORTED_PERIODS: Period[] = [DAILY_PERIOD]
-
-type SubscriptionHandle = ReturnType<typeof setInterval>
 
 function ensureMs(timestamp: number): number {
   return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp
@@ -30,7 +26,7 @@ function buildSubscriptionKey(symbol: SymbolInfo, period: Period): string {
 export class LocalDatafeed implements Datafeed {
   private readonly seriesMap: Record<string, KLineData[]>
   private readonly symbols: SymbolInfo[]
-  private readonly subscriptions = new Map<string, SubscriptionHandle>()
+  private readonly subscriptions = new Map<string, ReturnType<typeof setInterval>>()
 
   constructor(seriesMap: Record<string, KLineData[]>, symbols: SymbolInfo[]) {
     this.seriesMap = seriesMap
@@ -41,11 +37,11 @@ export class LocalDatafeed implements Datafeed {
     if (!search) {
       return this.symbols
     }
-    const keyword = search.toLowerCase()
+    const query = search.trim().toLowerCase()
     return this.symbols.filter((symbol) =>
-      [symbol.ticker, symbol.name, symbol.shortName]
+      [symbol.ticker, symbol.shortName, symbol.name]
         .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(keyword)),
+        .some((value) => value!.toLowerCase().includes(query)),
     )
   }
 
@@ -74,17 +70,17 @@ export class LocalDatafeed implements Datafeed {
     if (this.subscriptions.has(key)) {
       return
     }
-    const series = this.seriesMap[symbol.ticker]
-    if (!series?.length) {
+    const data = this.seriesMap[symbol.ticker]
+    if (!data?.length) {
       return
     }
 
-    callback(series[series.length - 1])
+    callback(data[data.length - 1])
 
     const interval = setInterval(() => {
-      const last = series[series.length - 1]
-      callback({ ...last, timestamp: Date.now() })
-    }, 60 * 1000)
+      const last = data[data.length - 1]
+      callback({ ...last })
+    }, 60 * 60 * 1000)
 
     this.subscriptions.set(key, interval)
   }
@@ -129,4 +125,3 @@ export function createChartOptions(overrides: Partial<ChartProOptions>): ChartPr
 
 export const DEFAULT_PERIOD = DAILY_PERIOD
 export const AVAILABLE_PERIODS = SUPPORTED_PERIODS
-export { MOCK_SYMBOLS as AVAILABLE_SYMBOLS, MOCK_SERIES as AVAILABLE_SERIES }

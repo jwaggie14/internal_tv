@@ -9,8 +9,8 @@
 } from 'klinecharts'
 
 interface TdSetupResult {
-  sellSetup: number | null
-  buySetup: number | null
+  sellSetupIndex: number | null
+  buySetupIndex: number | null
 }
 
 interface TdOptions {
@@ -19,10 +19,8 @@ interface TdOptions {
   closeOnly: boolean
 }
 
-const SELL_COLOR = '#f87171'
 const BUY_COLOR = '#4ade80'
 const HIGHLIGHT_COLOR = '#facc15'
-const CLOSE_ONLY_SELL = '#fb7185'
 const CLOSE_ONLY_BUY = '#60a5fa'
 
 function createTdSetupResults(dataList: KLineData[], options: TdOptions): TdSetupResult[] {
@@ -30,10 +28,13 @@ function createTdSetupResults(dataList: KLineData[], options: TdOptions): TdSetu
   let sellCount = 0
   let buyCount = 0
 
+  let sellNineIndex: number | null = null
+  let buyNineIndex: number | null = null
+
   for (let index = 0; index < dataList.length; index += 1) {
     const current = dataList[index]
-    let sellValue: number | null = null
-    let buyValue: number | null = null
+    let sellNine: number | null = sellNineIndex
+    let buyNine: number | null = buyNineIndex
 
     if (index >= 4) {
       const compared = dataList[index - 4]
@@ -50,14 +51,20 @@ function createTdSetupResults(dataList: KLineData[], options: TdOptions): TdSetu
 
       if (sellCondition) {
         sellCount += 1
-        sellValue = Math.min(sellCount, 9)
+        if (sellCount >= 9 && sellNineIndex === null) {
+          sellNine = index
+          sellNineIndex = index
+        }
       } else {
         sellCount = 0
       }
 
       if (buyCondition) {
         buyCount += 1
-        buyValue = Math.min(buyCount, 9)
+        if (buyCount >= 9 && buyNineIndex === null) {
+          buyNine = index
+          buyNineIndex = index
+        }
       } else {
         buyCount = 0
       }
@@ -67,8 +74,8 @@ function createTdSetupResults(dataList: KLineData[], options: TdOptions): TdSetu
     }
 
     results.push({
-      sellSetup: sellValue,
-      buySetup: buyValue,
+      sellSetupIndex: sellNine,
+      buySetupIndex: buyNine,
     })
   }
 
@@ -79,8 +86,8 @@ function createTooltip({ indicator, crosshair }: IndicatorCreateTooltipDataSourc
   const result = indicator.result ?? []
   const targetIndex = crosshair.dataIndex ?? result.length - 1
   const latest = result[targetIndex] ?? result[result.length - 1]
-  const sellText = latest?.sellSetup ? `${latest.sellSetup}` : '--'
-  const buyText = latest?.buySetup ? `${latest.buySetup}` : '--'
+  const sellText = latest?.sellSetupIndex != null ? '9' : '--'
+  const buyText = latest?.buySetupIndex != null ? '9' : '--'
 
   return {
     name: indicator.shortName,
@@ -100,7 +107,6 @@ function createTooltip({ indicator, crosshair }: IndicatorCreateTooltipDataSourc
 }
 
 function createDrawCallback(closeOnly: boolean) {
-  const sellColor = closeOnly ? CLOSE_ONLY_SELL : SELL_COLOR
   const buyColor = closeOnly ? CLOSE_ONLY_BUY : BUY_COLOR
 
   return ({
@@ -124,7 +130,7 @@ function createDrawCallback(closeOnly: boolean) {
     const right = bounding.left + bounding.width
     const top = bounding.top
     const bottom = bounding.top + bounding.height
-    const fontSize = Math.max(11, Math.min(18, barWidth * 0.75))
+    const fontSize = Math.max(12, Math.min(18, barWidth * 0.9))
 
     ctx.save()
     ctx.textAlign = 'center'
@@ -144,18 +150,21 @@ function createDrawCallback(closeOnly: boolean) {
         continue
       }
 
-      if (setup.sellSetup) {
-        const highPx = typeof yAxis.convertToPixel === 'function' ? yAxis.convertToPixel(candle.high) : top
+      if (setup.sellSetupIndex === index) {
+        const highTarget = Math.max(candle.high, candle.close)
+        const highPx = typeof yAxis.convertToPixel === 'function' ? yAxis.convertToPixel(highTarget) : top
         const y = Math.max(top + fontSize * 0.6, highPx - fontSize * 0.8)
-        ctx.fillStyle = setup.sellSetup >= 9 ? HIGHLIGHT_COLOR : sellColor
-        ctx.fillText(`${setup.sellSetup}`, x, y)
+        ctx.fillStyle = HIGHLIGHT_COLOR
+        ctx.fillText('9', x, y)
+        continue
       }
 
-      if (setup.buySetup) {
-        const lowPx = typeof yAxis.convertToPixel === 'function' ? yAxis.convertToPixel(candle.low) : bottom
+      if (setup.buySetupIndex === index) {
+        const lowTarget = Math.min(candle.low, candle.close)
+        const lowPx = typeof yAxis.convertToPixel === 'function' ? yAxis.convertToPixel(lowTarget) : bottom
         const y = Math.min(bottom - fontSize * 0.6, lowPx + fontSize * 0.8)
-        ctx.fillStyle = setup.buySetup >= 9 ? HIGHLIGHT_COLOR : buyColor
-        ctx.fillText(`${setup.buySetup}`, x, y)
+        ctx.fillStyle = buyColor
+        ctx.fillText('9', x, y)
       }
     }
 
@@ -201,3 +210,4 @@ export function initializeCustomIndicators(): void {
     }
   })
 }
+

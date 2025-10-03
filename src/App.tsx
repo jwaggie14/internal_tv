@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { SymbolInfo } from '@klinecharts/pro'
-import type { KLineData } from 'klinecharts'
 import '@klinecharts/pro/dist/klinecharts-pro.css'
 import './App.css'
 
@@ -18,7 +17,7 @@ import {
 } from './config/preferences'
 import { initializeCustomIndicators } from './config/indicatorExtensions'
 import type { ChartTileConfig, Preferences, SettingsDraft, SymbolRegistry, TabConfig } from './types'
-import { loadCsvPriceData } from './services/csvPriceRepository'
+import { loadPriceData, type PriceData } from './services/priceApi'
 import { getUserPreferences, saveUserPreferences } from './services/userSettingsStore'
 
 const DEFAULT_USER_ID = 'default-user'
@@ -42,10 +41,7 @@ type GridLayout = {
   placements: GridPlacement[]
 }
 
-type PriceDataState = {
-  symbols: SymbolInfo[]
-  series: Record<string, KLineData[]>
-}
+type PriceDataState = PriceData
 
 function sanitizeIndicatorList(values: string[] | undefined, allowed: string[], fallback: string[]): string[] {
   if (!values?.length) {
@@ -215,14 +211,14 @@ function App() {
       setPriceLoading(true)
       setPriceError(null)
       try {
-        const data = await loadCsvPriceData()
+        const data = await loadPriceData()
         if (!cancelled) {
           setPriceData(data)
         }
       } catch (error) {
-        console.error('Failed to load CSV price data.', error)
+        console.error('Failed to load price data from the API.', error)
         if (!cancelled) {
-          setPriceError('Unable to load market data from data.csv.')
+          setPriceError('Unable to load market data from the server.')
         }
       } finally {
         if (!cancelled) {
@@ -353,7 +349,7 @@ function App() {
       {showLoading && (
         <div className="app__loading" role="status" aria-live="polite">
           <span className="app__loading-spinner" />
-          <span>Loading workspace…</span>
+          <span>Loading workspace...</span>
         </div>
       )}
 
@@ -368,9 +364,7 @@ function App() {
                 {tab.name || 'Untitled'}
               </button>
             ))
-          : (
-            <span className="app__tabs-empty">Workspace is loading…</span>
-          )}
+          : <span className="app__tabs-empty">Workspace is loading...</span>}
       </nav>
 
       <main className="app__workspace">

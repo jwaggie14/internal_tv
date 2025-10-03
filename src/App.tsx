@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SymbolInfo } from '@klinecharts/pro'
 import '@klinecharts/pro/dist/klinecharts-pro.css'
 import './App.css'
@@ -21,6 +21,38 @@ import { loadPriceData, type PriceData } from './services/priceApi'
 import { getUserPreferences, saveUserPreferences } from './services/userSettingsStore'
 
 const DEFAULT_USER_ID = 'default-user'
+
+function getInitialUserId(): string {
+  if (typeof window === 'undefined') {
+    return DEFAULT_USER_ID
+  }
+  try {
+    const url = new URL(window.location.href)
+    const value = url.searchParams.get('user')?.trim()
+    return value && value.length ? value : DEFAULT_USER_ID
+  } catch (error) {
+    console.error('Failed to parse user from URL.', error)
+    return DEFAULT_USER_ID
+  }
+}
+
+function updateUserInUrl(userId: string): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const url = new URL(window.location.href)
+    if (userId && userId !== DEFAULT_USER_ID) {
+      url.searchParams.set('user', userId)
+    } else {
+      url.searchParams.delete('user')
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`
+    window.history.replaceState(null, '', next)
+  } catch (error) {
+    console.error('Failed to update user in URL.', error)
+  }
+}
 
 const DEFAULT_ROW_HEIGHT = 'minmax(420px, 1fr)'
 const LARGE_SINGLE_HEIGHT = 'minmax(560px, 1.6fr)'
@@ -58,6 +90,41 @@ function sanitizeIndicatorList(values: string[] | undefined, allowed: string[], 
   return deduped.length ? deduped : [...fallback]
 }
 
+function sanitizeIndicatorParams(
+  params: Record<string, number[]> | undefined,
+  allowedNames: Set<string>,
+): Record<string, number[]> {
+  if (!params) {
+    return {}
+  }
+  const sanitized: Record<string, number[]> = {}
+  allowedNames.forEach((name) => {
+    const raw = params[name]
+    if (!Array.isArray(raw)) {
+      return
+    }
+    const parsed = raw
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+    if (parsed.length) {
+      sanitized[name] = parsed
+    }
+  })
+  return sanitized
+}
+
+function areNumberArraysEqual(a: number[] | undefined, b: number[]): boolean {
+  if (!a || a.length !== b.length) {
+    return false
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (Number(a[index]) !== Number(b[index])) {
+      return false
+    }
+  }
+  return true
+}
+
 function sanitizePreferences(
   preferences: Preferences | undefined,
   symbols: SymbolInfo[],
@@ -66,14 +133,30 @@ function sanitizePreferences(
   const allowedTickers = new Set(symbols.map((symbol) => symbol.ticker))
   const fallbackTile = () => buildTile(fallbackTicker)
 
-  const sanitizeTile = (tile: ChartTileConfig): ChartTileConfig => ({
-    ...tile,
-    symbolTicker: allowedTickers.has(tile.symbolTicker) ? tile.symbolTicker : fallbackTicker,
-    indicators: {
-      main: sanitizeIndicatorList(tile.indicators?.main, INDICATOR_CATALOG.main, DEFAULT_MAIN_INDICATORS),
-      sub: sanitizeIndicatorList(tile.indicators?.sub, INDICATOR_CATALOG.sub, DEFAULT_SUB_INDICATORS),
-    },
-  })
+  const sanitizeTile = (tile: ChartTileConfig): ChartTileConfig => {
+    const mainIndicators = sanitizeIndicatorList(
+      tile.indicators?.main,
+      INDICATOR_CATALOG.main,
+      DEFAULT_MAIN_INDICATORS,
+    )
+    const subIndicators = sanitizeIndicatorList(
+      tile.indicators?.sub,
+      INDICATOR_CATALOG.sub,
+      DEFAULT_SUB_INDICATORS,
+    )
+    const indicatorNames = new Set([...mainIndicators, ...subIndicators])
+    const params = sanitizeIndicatorParams(tile.indicators?.params, indicatorNames)
+
+    return {
+      ...tile,
+      symbolTicker: allowedTickers.has(tile.symbolTicker) ? tile.symbolTicker : fallbackTicker,
+      indicators: {
+        main: mainIndicators,
+        sub: subIndicators,
+        params,
+      },
+    }
+  }
 
   const baseTabs = preferences?.tabs?.length ? preferences.tabs : buildDefaultPreferences(symbols).tabs
   const sanitizedTabs: TabConfig[] = cloneTabs(baseTabs).map((tab) => {
@@ -204,6 +287,7 @@ function App() {
   const [state, setState] = useState<{ userId: string; preferences: Preferences } | null>(null)
   const [settingsLoading, setSettingsLoading] = useState(true)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const initialUserIdRef = useRef<string>(getInitialUserId())
 
   useEffect(() => {
     let cancelled = false
@@ -241,18 +325,19 @@ function App() {
     const hydrateSettings = async () => {
       setSettingsLoading(true)
       setSettingsError(null)
+      const requestedUserId = initialUserIdRef.current
       try {
-        const stored = await getUserPreferences(DEFAULT_USER_ID)
+        const stored = await getUserPreferences(requestedUserId)
         if (!cancelled) {
           const sanitized = sanitizePreferences(stored ?? undefined, priceData.symbols)
-          setState({ userId: DEFAULT_USER_ID, preferences: sanitized })
+          setState({ userId: requestedUserId, preferences: sanitized })
         }
       } catch (error) {
         console.error('Failed to load saved workspace.', error)
         if (!cancelled) {
           setSettingsError('Unable to load saved workspace. Defaults are being used.')
           const fallback = sanitizePreferences(undefined, priceData.symbols)
-          setState({ userId: DEFAULT_USER_ID, preferences: fallback })
+          setState({ userId: requestedUserId, preferences: fallback })
         }
       } finally {
         if (!cancelled) {
@@ -271,11 +356,86 @@ function App() {
     initializeCustomIndicators()
   }, [])
 
+  useEffect(() => {
+    if (state?.userId) {
+      updateUserInUrl(state.userId)
+    }
+  }, [state?.userId])
+
   const persistPreferencesAsync = useCallback((userId: string, preferences: Preferences) => {
     void saveUserPreferences(userId, preferences).catch((error) => {
       console.error('Failed to save user preferences.', error)
     })
   }, [])
+
+  const handleIndicatorParamsChange = useCallback(
+    (tileId: string, indicatorName: string, calcParams: number[]) => {
+      if (!calcParams.length) {
+        return
+      }
+      let nextStatePayload: { userId: string; preferences: Preferences } | null = null
+      setState((previous) => {
+        if (!previous) {
+          return previous
+        }
+
+        let updated = false
+        const nextTabs = previous.preferences.tabs.map((tab) => {
+          let tabUpdated = false
+          const nextTiles = tab.tiles.map((tile) => {
+            if (tile.id !== tileId) {
+              return tile
+            }
+            const existingParams = tile.indicators.params ?? {}
+            if (areNumberArraysEqual(existingParams[indicatorName], calcParams)) {
+              return tile
+            }
+            tabUpdated = true
+            updated = true
+            return {
+              ...tile,
+              indicators: {
+                ...tile.indicators,
+                params: {
+                  ...existingParams,
+                  [indicatorName]: calcParams.slice(),
+                },
+              },
+            }
+          })
+          if (!tabUpdated) {
+            return tab
+          }
+          return {
+            ...tab,
+            tiles: nextTiles,
+          }
+        })
+
+        if (!updated) {
+          return previous
+        }
+
+        const nextPreferences: Preferences = {
+          ...previous.preferences,
+          tabs: nextTabs,
+        }
+
+        nextStatePayload = {
+          userId: previous.userId,
+          preferences: nextPreferences,
+        }
+
+        return nextStatePayload
+      })
+
+      if (nextStatePayload !== null) {
+        const payload = nextStatePayload as { userId: string; preferences: Preferences }
+        persistPreferencesAsync(payload.userId, payload.preferences)
+      }
+    },
+    [persistPreferencesAsync],
+  )
 
   const ready = Boolean(priceData && state)
   const symbolRegistry: SymbolRegistry = useMemo(() => {
@@ -337,7 +497,7 @@ function App() {
           <span className="app__subtitle">Chart Studio</span>
         </div>
         <div className="app__actions">
-          <div className="app__user-id">User: {state?.userId ?? DEFAULT_USER_ID}</div>
+          <div className="app__user-id">User: {state?.userId ?? initialUserIdRef.current}</div>
           <button className="app__button" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
@@ -410,6 +570,9 @@ function App() {
                   datafeed={datafeed}
                   period={DEFAULT_PERIOD}
                   indicatorSettings={tile.indicators}
+                  onIndicatorParamsChange={(indicatorName, calcParams) =>
+                    handleIndicatorParamsChange(tile.id, indicatorName, calcParams)
+                  }
                   style={{
                     gridColumn: `${columnStart} / span ${columnSpan}`,
                     gridRow: `${rowStart} / span ${rowSpan}`,
@@ -432,7 +595,7 @@ function App() {
           const stored = await getUserPreferences(userId);
           return stored ? sanitizePreferences(stored, priceData.symbols) : null;
         }}
-        currentUserId={state?.userId ?? DEFAULT_USER_ID}
+        currentUserId={state?.userId ?? initialUserIdRef.current}
         preferences={ready ? state!.preferences : sanitizePreferences(undefined, priceData?.symbols ?? [])}
         symbols={priceData?.symbols ?? []}
         indicatorCatalog={INDICATOR_CATALOG}

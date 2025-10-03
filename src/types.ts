@@ -3,6 +3,7 @@
 export type IndicatorSettings = {
   main: string[]
   sub: string[]
+  params?: Record<string, number[]>
 }
 
 export interface ChartTileConfig {

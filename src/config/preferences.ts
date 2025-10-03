@@ -19,6 +19,7 @@ export function buildTile(symbolTicker: string): ChartTileConfig {
     indicators: {
       main: [...DEFAULT_MAIN_INDICATORS],
       sub: [...DEFAULT_SUB_INDICATORS],
+      params: {},
     },
   }
 }
@@ -48,8 +49,8 @@ export function cloneTabs(tabs: TabConfig[]): TabConfig[] {
       indicators: {
         main: [...tile.indicators.main],
         sub: [...tile.indicators.sub],
+        params: tile.indicators.params ? { ...tile.indicators.params } : {},
       },
     })),
   }))
 }
-

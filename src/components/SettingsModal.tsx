@@ -225,6 +225,7 @@ export function SettingsModal({
         indicators: {
           main: [...tile.indicators.main],
           sub: [...tile.indicators.sub],
+          params: tile.indicators.params ? { ...tile.indicators.params } : {},
         },
       }))
       return {
